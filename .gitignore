@@ -1,0 +1,29 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.env/
+
+# =========================
+# Editor / OS
+# =========================
+.vscode/
+.DS_Store
+
+# =========================
+# Dataset (escludi tutto)
+# =========================
+*.csv
+*.json
+*.jsonl
+*.pkl
+*.parquet
+
+# =========================
+# Dataset da VERSIONARE
+# =========================
+!RecipeNLG_clean.csv
+!Dataset_testuale.csv
