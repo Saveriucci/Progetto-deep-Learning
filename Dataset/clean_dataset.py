@@ -19,7 +19,7 @@ if "Unnamed: 0" in ds.columns:
     ds.rename(columns={"Unnamed: 0": "id"}, inplace=True)
 
 # tieni solo le colonne che ti servono (aggiungi/togli a piacere)
-cols = ["id", "ingredients", "directions"]
+cols = ["id","title", "ingredients", "directions"]
 cols = [c for c in cols if c in ds.columns]  # evita errori se una colonna manca
 ds_clean = ds[cols].copy()
 
