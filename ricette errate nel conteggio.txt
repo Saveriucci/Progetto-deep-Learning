@@ -1,0 +1,108 @@
+INFERENZA
+
+[QWEN]
+
+SINTASSI / STRUTTURA (6):
+- No-Bake Nut Cookies
+- Chicken Funny
+- Double Cherry Delight
+- Easy German Chocolate Cake
+- Prize-Winning Meat Loaf
+- Pear-Lime Salad
+
+SEMANTICA (7):
+- No-Bake Nut Cookies
+- Reese’s Cups Candy
+- Double Cherry Delight
+- Easy German Chocolate Cake
+- Pear-Lime Salad
+- Summer Spaghetti
+- Chicken Divan
+
+
+[PHI-3]
+
+SINTASSI (0):
+- nessuna
+
+STRUTTURA (4):
+- Easy German Chocolate Cake
+- Prize-Winning Meat Loaf
+- Chicken Divan
+- Summer Spaghetti
+
+SEMANTICA (2):
+- Reese’s Cups Candy
+- Pear-Lime Salad
+
+
+[MISTRAL]
+
+SINTASSI (0):
+- nessuna
+
+STRUTTURA (0):
+- nessuna
+
+SEMANTICA (1):
+- Double Cherry Delight
+
+
+
+
+
+
+
+
+
+
+
+
+FASE DI VALUTAZIONE
+
+
+[QWEN 2.5]
+
+SINTASSI (0):
+- nessuna
+
+STRUTTURA (0):
+- nessuna
+
+SEMANTICA (6):
+- Corral Barbecued Beef Steak Strips
+- Green Bean Specialty
+- Spinach Dip
+- Chicken Funny
+- Cheeseburger Potato Soup
+- Millionaire Pie
+
+
+
+[PHI-3]
+
+SINTASSI (0):
+- nessuna
+
+STRUTTURA (0):
+- nessuna
+
+SEMANTICA (5):
+- Corral Barbecued Beef Steak Strips
+- Green Bean Specialty
+- Spinach Dip
+- Cranberry Salad
+- Rhubarb Coffee Cake
+
+
+[MISTRAL]
+
+SINTASSI (0):
+- nessuna
+
+STRUTTURA (0):
+- nessuna
+
+SEMANTICA (2):
+- Corral Barbecued Beef Steak Strips
+- Green Bean Specialty

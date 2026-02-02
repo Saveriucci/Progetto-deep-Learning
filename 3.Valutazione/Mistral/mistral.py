@@ -10,38 +10,34 @@ from peft import PeftModel
 
 from transformers import StoppingCriteria,StoppingCriteriaList
 
+
 class StopOnJsonObjectEnd(StoppingCriteria):
-    def __init__(self, tokenizer):
+    def __init__(self, tokenizer, start_len: int):
         self.tokenizer = tokenizer
+
         self.depth = 0
         self.in_str = False
         self.esc = False
-        self.seen_first_brace = False
+        self.started = False
 
-        self._decoded_so_far = ""   # buffer cumulativo dell'output decodificato
-        self._last_input_len = 0    # lunghezza token vista nell'ultima call
+        self.prev_len = start_len  # IMPORTANT: ignora il prompt!
 
     def __call__(self, input_ids, scores, **kwargs):
         ids = input_ids[0]
-
-        # Se non sono stati generati nuovi token rispetto all'ultima call, non fare nulla
         cur_len = ids.shape[0]
-        if cur_len <= self._last_input_len:
+
+        if cur_len <= self.prev_len:
             return False
 
-        # Decodifica SOLO i nuovi token
-        new_ids = ids[self._last_input_len:]
-        new_text = self.tokenizer.decode(new_ids, skip_special_tokens=False)
+        new_ids = ids[self.prev_len:cur_len]
+        self.prev_len = cur_len
 
+        chunk = self.tokenizer.decode(new_ids, skip_special_tokens=False)
 
-        self._last_input_len = cur_len
-        self._decoded_so_far += new_text
-
-        # Analizza solo il testo nuovo
-        for ch in new_text:
-            if not self.seen_first_brace:
+        for ch in chunk:
+            if not self.started:
                 if ch == "{":
-                    self.seen_first_brace = True
+                    self.started = True
                     self.depth = 1
                 continue
 
@@ -60,10 +56,10 @@ class StopOnJsonObjectEnd(StoppingCriteria):
                 elif ch == "}":
                     self.depth -= 1
                     if self.depth == 0:
-                        return True  # JSON completo
+                        return True
 
         return False
-
+ 
 # -----------------------
 # CONFIG
 # -----------------------
@@ -376,9 +372,9 @@ def try_parse(decoded: str):
 @torch.no_grad()
 def infer_one(model, tokenizer, recipe_text: str) -> dict:
     messages = [
-        {"role": "system", "content": SYSTEM},
-        {"role": "user", "content": recipe_text},
-    ]
+    {"role": "system", "content": SYSTEM},
+    {"role": "user", "content": recipe_text + "\n\nReturn ONLY JSON. Start now:\n"},
+]
 
     prompt = tokenizer.apply_chat_template(
         messages,
@@ -388,21 +384,30 @@ def infer_one(model, tokenizer, recipe_text: str) -> dict:
 
     # IMPORTANTE: con device_map="auto" + offload è più robusto NON forzare .to(device)
     inputs = tokenizer(prompt, return_tensors="pt")
+    input_len = inputs["input_ids"].shape[1]
+    max_total = getattr(model.config, "max_position_embeddings", 2048)
 
-    stoppers = StoppingCriteriaList([StopOnJsonObjectEnd(tokenizer)])
+    max_new = max(256, min(1200, max_total - input_len - 8))
+
+    # Metti gli input sul device del modello (tipicamente cuda:0)
+    first_param_device = next(model.parameters()).device
+    inputs = {k: v.to(first_param_device) for k, v in inputs.items()}
+
+    prompt_len = inputs["input_ids"].shape[1]
+    stoppers = StoppingCriteriaList([StopOnJsonObjectEnd(tokenizer, start_len=prompt_len)])
 
     gen = model.generate(
         **inputs,
-        max_new_tokens=MAX_NEW_TOKENS,
+        max_new_tokens=max_new,
         do_sample=False,
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
         stopping_criteria=stoppers,
     )
 
-    prompt_len = inputs["input_ids"].shape[1]
     gen_tokens = gen[0][prompt_len:]
-    gen_text = tokenizer.decode(gen_tokens, skip_special_tokens=True).strip()
+    gen_text = tokenizer.decode(gen_tokens, skip_special_tokens=False).strip()
+
 
     obj, err, json_str = try_parse(gen_text)
     if obj is None:
