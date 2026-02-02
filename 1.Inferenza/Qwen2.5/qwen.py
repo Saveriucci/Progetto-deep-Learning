@@ -53,25 +53,22 @@ def extract_first_json_block(s: str):
 tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
 config = AutoConfig.from_pretrained(MODEL_ID, trust_remote_code=True)
 
-# Fix rope_scaling edge-cases that can break loading in some environments
-rs = getattr(config, "rope_scaling", None)
-if isinstance(rs, dict):
-    if "type" not in rs and "rope_type" in rs:
-        rs["type"] = rs["rope_type"]
-    if rs.get("type") in (None, "default", "linear", "dynamic"):
-        config.rope_scaling = None
+# ✅ scegli dtype PRIMA
+use_bf16 = (device == "cuda") and torch.cuda.is_bf16_supported()
+dtype = torch.bfloat16 if use_bf16 else (torch.float16 if device == "cuda" else torch.float32)
 
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_ID,
     config=config,
     trust_remote_code=True,
-    torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+    torch_dtype=dtype,
     device_map="auto" if device == "cuda" else None,
-    attn_implementation="eager",
+    attn_implementation="eager",   # ✅ resta eager
 )
 model.eval()
 if device == "cpu":
     model = model.to(device)
+
 
 SYSTEM = (
     "You are an information extraction engine.\n"
@@ -177,16 +174,25 @@ def generate_once(recipe_text: str, max_new_tokens: int, system_text: str):
     prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
 
+    # ✅ forziamo il primo token "{"
+    lbrace_id = tokenizer.encode("{", add_special_tokens=False)[0]
+    prompt_len = inputs["input_ids"].shape[1]
+
+    def prefix_allowed_tokens_fn(batch_id, input_ids):
+        # input_ids può essere (seq_len,) oppure (batch, seq_len)
+        cur_len = input_ids.shape[-1]
+        if cur_len == prompt_len:
+            return [lbrace_id]
+        return list(range(tokenizer.vocab_size))
+
     with torch.no_grad():
         out = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
             do_sample=False,
-            temperature=None,
-            top_p=None,
-            top_k=None,
             eos_token_id=tokenizer.eos_token_id,
             pad_token_id=tokenizer.eos_token_id,
+            prefix_allowed_tokens_fn=prefix_allowed_tokens_fn,
         )
 
     gen_ids = out[0][inputs["input_ids"].shape[1]:]

@@ -1,116 +1,30 @@
-import os
-os.environ["TRANSFORMERS_NO_TF"] = "1"
-os.environ["TRANSFORMERS_NO_FLAX"] = "1"
+import os, json, time, re, random
+from openai import OpenAI
+from openai import RateLimitError, APIError, APITimeoutError
 
-import re
-import json
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from peft import PeftModel
-
-from transformers import StoppingCriteria,StoppingCriteriaList
-
-class StopOnJsonObjectEnd(StoppingCriteria):
-    def __init__(self, tokenizer):
-        self.tokenizer = tokenizer
-        self.depth = 0
-        self.in_str = False
-        self.esc = False
-        self.seen_first_brace = False
-
-        self._decoded_so_far = ""   # buffer cumulativo dell'output decodificato
-        self._last_input_len = 0    # lunghezza token vista nell'ultima call
-
-    def __call__(self, input_ids, scores, **kwargs):
-        ids = input_ids[0]
-
-        # Se non sono stati generati nuovi token rispetto all'ultima call, non fare nulla
-        cur_len = ids.shape[0]
-        if cur_len <= self._last_input_len:
-            return False
-
-        # Decodifica SOLO i nuovi token
-        new_ids = ids[self._last_input_len:]
-        new_text = self.tokenizer.decode(new_ids, skip_special_tokens=False)
-
-
-        self._last_input_len = cur_len
-        self._decoded_so_far += new_text
-
-        # Analizza solo il testo nuovo
-        for ch in new_text:
-            if not self.seen_first_brace:
-                if ch == "{":
-                    self.seen_first_brace = True
-                    self.depth = 1
-                continue
-
-            if self.in_str:
-                if self.esc:
-                    self.esc = False
-                elif ch == "\\":
-                    self.esc = True
-                elif ch == '"':
-                    self.in_str = False
-            else:
-                if ch == '"':
-                    self.in_str = True
-                elif ch == "{":
-                    self.depth += 1
-                elif ch == "}":
-                    self.depth -= 1
-                    if self.depth == 0:
-                        return True  # JSON completo
-
-        return False
-
-# -----------------------
-# CONFIG
-# -----------------------
-BASE_MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.3"
-
-ADAPTER_DIR = r"C:\Users\tomas\Desktop\universita\Magistrale\Secondo Anno\Primo Semestre\Deep Learning\Progetto\2.Addestramento\Mistral\mistral-recipe-json-model"
-OUT_DIR = r"C:\Users\tomas\Desktop\universita\Magistrale\Secondo Anno\Primo Semestre\Deep Learning\Progetto\3.Valutazione\Mistral"
-
-OFFLOAD_DIR = os.path.join(OUT_DIR, "offload")
-os.makedirs(OUT_DIR, exist_ok=True)
-os.makedirs(OFFLOAD_DIR, exist_ok=True)
-
-# Output files (stesso stile di Phi-3)
-OUT_JSON  = os.path.join(OUT_DIR, "recipes_extracted.json")
-OUT_FAIL  = os.path.join(OUT_DIR, "recipes_failures.json")
-OUT_JSONL = os.path.join(OUT_DIR, "recipes_extracted.jsonl")
-
-MAX_NEW_TOKENS = 768
-TEMPERATURE = 0.0
-TOP_P = 1.0
-
-SYSTEM = (
-    "You are an information extraction engine.\n"
-    "Input: a raw recipe written in natural language.\n"
-    "Output: ONLY valid JSON with EXACTLY these keys: title, ingredients, steps.\n"
-    "No extra text.\n\n"
-    "Extraction rules:\n"
-    "- title: use an explicit title if present; otherwise infer a short, non-empty title from the recipe; if impossible use \"\".\n"
-    "- ingredients: list ONLY ingredients mentioned in the text. Keep quantities if present (e.g., \"200g spaghetti\").\n"
-    "- steps: ordered list of cooking actions derived from the text, split into multiple short imperative steps.\n"
-    "- Use double quotes for all strings. No trailing commas. Valid JSON.\n"
-    "- Do not add any keys besides title, ingredients, steps.\n"
-    "Start your answer with '{' and end with '}'.\n\n"
-    "Do NOT wrap the JSON in markdown code fences (no ```json and no ```).\n"
-    "Output must be plain JSON text only.\n\n"
-    "End the output immediately after the closing '}'.\n\n"
-    "JSON format:\n"
-    "{\n"
-    "  \"title\": \"...\",\n"
-    "  \"ingredients\": [\"...\"],\n"
-    "  \"steps\": [\"...\"]\n"
-    "}\n"
+client = OpenAI(
+    api_key=os.environ["GROQ_API_KEY"],
+    base_url="https://api.groq.com/openai/v1",
 )
 
+MODEL = "llama-3.3-70b-versatile"
+
+SYSTEM = """You are an information extraction engine.
+Input: a raw recipe written in natural language.
+Output: ONLY valid JSON with EXACTLY these keys: title, ingredients, steps.
+No extra text.
+
+Extraction rules:
+- title: use an explicit title if present; otherwise infer a short, non-empty title; if impossible use "".
+- ingredients: list ONLY ingredients mentioned in the text. Keep quantities if present.
+- steps: ordered list of cooking actions derived from the text.
+- Use double quotes for all strings. No trailing commas.
+- Do not add any keys besides title, ingredients, steps.
+Start your answer with '{' and end with '}'.
+Do NOT wrap the JSON in markdown.
+"""
 
 RECIPES = [
-    # --- LE PRIME 50 RICETTE ---
     "No-Bake Nut Cookies. In a heavy two-quart saucepan, combine 1 cup firmly packed brown sugar, 1/2 cup evaporated milk, 2 tablespoons butter or margarine, and 1/2 cup broken pecans. Cook over medium heat, stirring constantly, until the mixture bubbles across the surface. Continue boiling and stirring for 5 minutes. Remove from heat and stir in 1/2 teaspoon vanilla, then add 3 1/2 cups bite-size shredded rice biscuits and mix thoroughly. Using two teaspoons, drop the mixture onto wax paper to form about 30 clusters. Let stand for approximately 30 minutes, until firm.",
     "Jewell Ball’s Chicken. Spread 1 small jar of chipped beef, cut into pieces, over the bottom of a baking dish. Place 4 boneless chicken breasts on top. In a bowl, mix together 1 can cream of mushroom soup and 1 carton sour cream, then pour the mixture evenly over the chicken. Bake uncovered at 275°F for 3 hours.",
     "Creamy Corn. Place 2 packages (16 oz each) frozen corn into a slow cooker along with 1 package (8 oz) cream cheese cut into cubes, 1/3 cup butter cut into pieces, 1/2 teaspoon garlic powder, 1/2 teaspoon salt, and 1/4 teaspoon pepper. Cover and cook on low heat for about 4 hours, until heated through and creamy, stirring before serving.",
@@ -161,8 +75,6 @@ RECIPES = [
     "Chicken Divan. Melt 1/4 cup margarine in a skillet and sauté 1/4 cup chopped onion and celery to taste. Remove from heat and stir in 1/4 cup flour and 1/8 teaspoon curry powder. Drain 1 can mushrooms and reserve juice, adding water to make 1/2 cup liquid. Stir liquid and 1 can cream of celery soup into mixture and cook until thick. Arrange chopped broccoli and cubed cooked chicken in a baking dish, spoon sauce over, top with shredded Monterey Jack cheese, and bake at 350°F until cheese melts.",
     "Mexican Cookie Rings. Sift together 1 1/2 cups flour, 1/2 teaspoon baking powder, and 1/2 teaspoon salt. Cream 1/2 cup butter with 2/3 cup sugar, add 3 egg yolks and 1 teaspoon vanilla. Mix in dry ingredients, shape dough into rings, dip into multi-colored candies, and bake at 375°F for 10 to 12 minutes.",
     "Vegetable-Burger Soup. Brown 1/2 lb ground beef lightly in a soup pot and drain excess fat. Add 2 cups water, 1 can stewed tomatoes, 1 can tomato sauce, 1 package onion soup mix, 1 package frozen mixed vegetables, 1 teaspoon sugar, and simmer for 20 minutes.",
-
-    # --- LE 100 NUOVE RICETTE (900-1000) ---
     "Corn Pudding. Mix 3/4 c. sugar, 2 Tbsp. flour, 1/2 tsp. salt, 2 eggs, 1 1/4 c. milk, 1/2 stick melted butter, and 1 1/2 pt. drained corn, pour into a baking dish, and bake at 375°F for 1 hour.",
     "Chicken Cordon Blue. Pound 3 chicken breasts (halves) until thin, lay 3 slices Swiss or Jack cheese and 3 slices cooked ham on the breasts, roll up and secure with toothpicks; mix 3 Tbsp. flour, 1 tsp. salt, pepper to taste, and 1 tsp. paprika in a plastic bag, add the rolls and shake to coat, then melt 3 Tbsp. butter in a frying pan and brown on all sides, add 1/2 c. white wine and 1 chicken bouillon cube, cover and simmer 30 minutes; remove chicken, add 1 c. whipping cream to the pan and cook on medium-high for 3 minutes until smooth and creamy, then pour over chicken (serves 3).",
     "Corn Casserole. In a large bowl, mix 1 can creamed corn, 1 can whole corn, 1 stick margarine (melted), and 1 box Jiffy corn bread mix (dry) until well combined, then stir in about 3/4 of the 1 (16 oz.) container fat free sour cream and mix well.",
@@ -266,211 +178,85 @@ RECIPES = [
     "Hidden Valley Ranch Oyster Crackers. Mix 1 pkg. Hidden Valley Ranch salad dressing mix with 3/4 to 1 c. salad oil, add 1/4 tsp. lemon pepper, 1/2 to 1 tsp. dill weed, and 1/4 tsp. garlic powder, pour over 12 to 16 oz. plain oyster crackers and stir to coat, then warm in a very low oven for 15 to 20 minutes."
 ]
 
-# -----------------------
-# LOAD MODEL (4-bit) + ADAPTER
-# -----------------------
-def load_model_and_tokenizer():
-    use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-    compute_dtype = torch.bfloat16 if use_bf16 else torch.float16
+def backoff_sleep(attempt: int, base: float = 2.0, cap: float = 60.0) -> None:
+    # exponential backoff + jitter
+    s = min(cap, base * (2 ** (attempt - 1)))
+    s = s * (0.7 + 0.6 * random.random())  # jitter 0.7x..1.3x
+    time.sleep(s)
 
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=compute_dtype,
-    )
+def extract_recipe(recipe_text: str) -> dict:
+    last_exc = None
 
-    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_ID, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.pad_token_id = tokenizer.eos_token_id
+    for attempt in range(1, 6):
+        try:
+            resp = client.chat.completions.create(
+                model=MODEL,
+                temperature=0,
+                max_tokens=600,
+                messages=[
+                    {"role": "system", "content": SYSTEM},
+                    {"role": "user", "content": "RECIPE:\n" + recipe_text},
+                ],
+            )
 
-    base = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL_ID,
-        quantization_config=bnb_config,
-        device_map="auto",
-        trust_remote_code=True,
-        attn_implementation="sdpa",
-    )
+            text = (resp.choices[0].message.content or "").strip()
+            if not text:
+                raise ValueError("Risposta vuota")
 
-    model = PeftModel.from_pretrained(
-        base,
-        ADAPTER_DIR,
-        offload_dir=OFFLOAD_DIR,
-    )
+            # parse robusto
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                a, b = text.find("{"), text.rfind("}")
+                if a != -1 and b != -1 and b > a:
+                    data = json.loads(text[a:b+1])
+                else:
+                    raise ValueError(f"Output non-JSON (len={len(text)}): {text[:200]!r}")
 
-    model.eval()
-    return model, tokenizer
+            return {
+                "title": str(data.get("title", "") or ""),
+                "ingredients": [str(x) for x in (data.get("ingredients") or [])],
+                "steps": [str(x) for x in (data.get("steps") or [])],
+            }
 
-
-# -----------------------
-# HELPERS
-# -----------------------
-def strip_code_fences(s: str) -> str:
-    s = re.sub(r"```(?:json)?\s*", "", s, flags=re.IGNORECASE)
-    s = s.replace("```", "")
-    return s.strip()
-
-def extract_first_json_block(s: str):
-    """
-    Estrae il primo blocco JSON completo { ... }.
-    Gestisce correttamente { } dentro stringhe JSON (tra " ").
-    """
-    s = strip_code_fences(s)
-    start = s.find("{")
-    if start == -1:
-        return None
-
-    depth = 0
-    in_str = False
-    esc = False
-
-    for i in range(start, len(s)):
-        ch = s[i]
-
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-        else:
-            if ch == '"':
-                in_str = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    return s[start : i + 1]
-
-    return None
-
-def try_parse(decoded: str):
-    json_str = extract_first_json_block(decoded)
-    if json_str is None:
-        return None, "no_json", None
-
-    try:
-        obj = json.loads(json_str)
-    except json.JSONDecodeError as e:
-        return None, f"invalid_json: {e}", json_str
-
-    # alias: directions -> steps (nel caso raro)
-    if "steps" not in obj and "directions" in obj:
-        obj["steps"] = obj.pop("directions")
-
-    # tieni SOLO le chiavi richieste
-    obj = {
-        "title": obj.get("title", ""),
-        "ingredients": obj.get("ingredients", []),
-        "steps": obj.get("steps", []),
-    }
-
-    if not isinstance(obj["title"], str) or not isinstance(obj["ingredients"], list) or not isinstance(obj["steps"], list):
-        return None, "bad_types", json_str
-
-    return obj, None, json_str
-
-@torch.no_grad()
-def infer_one(model, tokenizer, recipe_text: str) -> dict:
-    messages = [
-        {"role": "system", "content": SYSTEM},
-        {"role": "user", "content": recipe_text},
-    ]
-
-    prompt = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True
-    )
-
-    # IMPORTANTE: con device_map="auto" + offload è più robusto NON forzare .to(device)
-    inputs = tokenizer(prompt, return_tensors="pt")
-
-    stoppers = StoppingCriteriaList([StopOnJsonObjectEnd(tokenizer)])
-
-    gen = model.generate(
-        **inputs,
-        max_new_tokens=MAX_NEW_TOKENS,
-        do_sample=False,
-        eos_token_id=tokenizer.eos_token_id,
-        pad_token_id=tokenizer.pad_token_id,
-        stopping_criteria=stoppers,
-    )
-
-    prompt_len = inputs["input_ids"].shape[1]
-    gen_tokens = gen[0][prompt_len:]
-    gen_text = tokenizer.decode(gen_tokens, skip_special_tokens=True).strip()
-
-    obj, err, json_str = try_parse(gen_text)
-    if obj is None:
-        return {
-            "_error": err,
-            "_raw": gen_text,
-            "_json_text": json_str if json_str is not None else "",
-        }
-
-    return obj
-
-def run_extraction(recipes, model, tokenizer):
-    results = []
-    failures = []
-
-    for i, recipe_text in enumerate(recipes, start=1):
-        print(f"\n=== Processing recipe {i}/{len(recipes)} ===")
-        out = infer_one(model, tokenizer, recipe_text)
-
-        if "_error" in out:
-            print("❌ Failed:", out["_error"])
-            failures.append({
-                "index": i,
-                "reason": out["_error"],
-                "recipe_text": recipe_text,
-                "raw": out.get("_raw", ""),
-                "json_str": out.get("_json_text", ""),
-            })
+        except (RateLimitError, APITimeoutError) as e:
+            last_exc = e
+            print(f"[Tentativo {attempt}/5] rate limit/timeout: {e}")
+            backoff_sleep(attempt)
             continue
 
-        results.append(out)
-        print("✅ OK:", out.get("title", ""))
+        except APIError as e:
+            last_exc = e
+            msg = str(e).lower()
+            # 502/503/504 o overload vari
+            if any(x in msg for x in ["503", "504", "overloaded", "temporarily unavailable", "bad gateway", "502"]):
+                print(f"[Tentativo {attempt}/5] transient APIError: {e}")
+                backoff_sleep(attempt)
+                continue
+            raise
 
-        # salva anche jsonl (comodo per debug)
-        with open(OUT_JSONL, "a", encoding="utf-8") as f:
-            f.write(json.dumps(
-                {"index": i, "input": recipe_text, "output": out},
-                ensure_ascii=False
-            ) + "\n")
+        except Exception as e:
+            last_exc = e
+            print(f"[Tentativo {attempt}/5] errore: {type(e).__name__}: {e}")
+            backoff_sleep(attempt)
+            continue
 
-    return results, failures
+    raise RuntimeError(f"Estrazione fallita dopo 5 tentativi. Ultimo errore: {last_exc}")
 
 
-# -----------------------
-# MAIN
-# -----------------------
-if __name__ == "__main__":
-    if not RECIPES:
-        print("RECIPES è vuoto.")
-        raise SystemExit(1)
+# ---- ESTRAZIONE ----
+all_recipes = []
+for i, r in enumerate(RECIPES):
+    try:
+        all_recipes.append(extract_recipe(r))
+    except Exception as e:
+        all_recipes.append({"title": "", "ingredients": [], "steps": [], "error": str(e), "index": i})
+        print(f"Ricetta {i} fallita: {e}")
+    time.sleep(0.8)  # 0.5–1.5s tipico sul free tier
 
-    # azzera il jsonl ad ogni run
-    if os.path.exists(OUT_JSONL):
-        os.remove(OUT_JSONL)
+# ---- SALVATAGGIO ----
+with open("recipes.json", "w", encoding="utf-8") as f:
+    json.dump(all_recipes, f, ensure_ascii=False, indent=2)
 
-    model, tokenizer = load_model_and_tokenizer()
-
-    results, failures = run_extraction(RECIPES, model, tokenizer)
-
-    with open(OUT_JSON, "w", encoding="utf-8") as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
-
-    with open(OUT_FAIL, "w", encoding="utf-8") as f:
-        json.dump(failures, f, ensure_ascii=False, indent=2)
-
-    print("\n=== DONE ===")
-    print("Extracted:", len(results), "/", len(RECIPES))
-    print("Failures:", len(failures))
-    print(f"Saved: {OUT_JSON} and {OUT_FAIL}")
-    print(f"Also saved JSONL: {OUT_JSONL}")
+print("File recipes.json creato con successo")
 
