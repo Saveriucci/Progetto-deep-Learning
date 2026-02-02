@@ -16,7 +16,6 @@ __pycache__/
 # =========================
 # Dataset (escludi tutto)
 # =========================
-*.csv
 *.pkl
 *.parquet
 
