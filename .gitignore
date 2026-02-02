@@ -23,12 +23,10 @@ __pycache__/
 # =========================
 # Dataset da VERSIONARE
 # =========================
-!RecipeNLG_clean.csv
-!Dataset_testuale.csv
-
 
 2.Addestramento/Mistral/mistral-recipe-json-model/
 2.Addestramento/Phi3/phi3-recipe-json-model/
 2.Addestramento/Qwen2.5/qwen-recipe-json-model/
-1.Inferenza/ricette errate nel conteggio.txt
+
+C:\Users\tomas\Desktop\universita\Magistrale\Secondo Anno\Primo Semestre\Deep Learning\Progetto\0.Dataset\clean_dataset.py
 
